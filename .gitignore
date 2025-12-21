@@ -1,0 +1,9 @@
+# Ignore JSON files
+*.json
+
+# Ignore Pickle files
+*.pkl
+
+# Ignore virtual environments
+.venv/
+venv/
