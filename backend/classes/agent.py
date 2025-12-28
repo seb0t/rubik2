@@ -4,6 +4,7 @@ from collections import deque
 import numpy as np
 import json
 import os
+import base64
 
 
 class RubikAgent:
@@ -17,7 +18,7 @@ class RubikAgent:
             epsilonMin: float = 0.1,
             memorySize: int = 100000,
             batchSize: int = 64,
-            qTable : Dict[Any, Any] = {}
+            qTable : Dict[str, Any] = {}
         ) -> None:
     
         """
@@ -31,7 +32,7 @@ class RubikAgent:
         self.epsilonMin = epsilonMin
         self.memorySize = memorySize
         self.batchSize = batchSize
-        self.qTable = qTable
+        self.qTable : Dict[str, Any] = qTable
         self.memory : deque[Any] = deque(maxlen=memorySize)
         self.tempMemory :dict[str, Any] = {}
 
@@ -43,19 +44,33 @@ class RubikAgent:
         self.lossHistory : list[float] = []
         self.epsilonHistory : list[float] = []
 
-    def encodeState(self , state : np.ndarray) -> Any:
+    def encodeState(self , state : np.ndarray) -> str | None:
         """
-        Encodes the current state of the Rubik's Cube into a unique integer representation.
+        Encodes the current state of the Rubik's Cube into a unique hexadecimal string representation.
         """
         encodedState :str = ""
         for value in state.flatten():
             if value != 0:
-                encodedState += str(int(value))
+                encodedState += str(int(value-1)) # the -1 is to convert from 1-6 to 0-5
 
         try:
             if len(encodedState) != 54:
                 raise ValueError("Encoded state length is not 54.")
-            return int(encodedState)
+            
+            # Optimization: Convert to integer then to hex string to save space
+            # We strip the '0x' prefix for cleaner keys
+            
+            
+            # Step 1: convert base-5 string to integer
+            number = int(encodedState, 6)
+
+            # Step 2: convert integer to bytes (big-endian, minimal length)
+            byte_length = (number.bit_length() + 7) // 8 or 1
+            number_bytes = number.to_bytes(byte_length, byteorder="big")
+
+            # Step 3: base64 encode
+            return base64.b85encode(number_bytes).decode("ascii")
+
         except ValueError as ve:
             print(f"Error encoding state: {ve}")
             return None
@@ -107,10 +122,10 @@ class RubikAgent:
             print(f"Chose random action: {actionIndex}")
         return actionIndex
 
-    def addStateToQtable(self, encodedState : int):
+    def addStateToQtable(self, encodedState : str):
         self.qTable[encodedState] = np.zeros(self.actionDim)
 
-    def choseBestActionId(self, verbose: int, encodedState: int) -> int:
+    def choseBestActionId(self, verbose: int, encodedState: str) -> int:
         if encodedState not in self.qTable:
             print(f"State {encodedState} not found in Q-table. Adding it now.")
             self.addStateToQtable(encodedState)
@@ -169,6 +184,7 @@ class RubikAgent:
         tdTarget: float = reward + self.gamma * self.qTable[nextStateEncoded][bestNextStateActionId]
         tdDelta: float = tdTarget - self.qTable[currentStateEncoded][actionId]
         self.qTable[currentStateEncoded][actionId] += self.alpha * tdDelta
+        self.qTable[currentStateEncoded][actionId] = round(self.qTable[currentStateEncoded][actionId],3)
 
     def train(
             self,
@@ -303,6 +319,22 @@ class RubikAgent:
         """
         Loads the Q-table from the specified file.
         """
+
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"File {filepath} does not exist.")
+            return
+        
         with open(filepath, 'r') as f:
             qtable_data = json.load(f)
-            self.qTable = {int(k): np.array(v) for k, v in qtable_data.items()}
+            
+            # Migration logic: Support both old integer keys (as strings in JSON) and new hex keys
+            self.qTable = {}
+            for k, v in qtable_data.items():
+                # If the key is all digits and length is long (54 digits), it's the old format
+                # We need to convert it to hex to match the new encodeState behavior
+                if k.isdigit() and len(k) == 54:
+                     new_key = hex(int(k))[2:]
+                     self.qTable[new_key] = np.array(v)
+                else:
+                    # Assume it's already in the new format (or just different)
+                    self.qTable[k] = np.array(v)
